@@ -82,53 +82,59 @@ payment, at withdrawal of stored balance, and at changes to the bound phone
 number or payment method. That is where security effort belongs — not spread
 evenly across the session.
 
-## 3. Five design decisions
+## 3. Three design decisions
 
-Each is stated as the business trade-off first, with the technical
-implementation compressed to a line. The engineering is mostly standard
-practice; the decisions are the substance.
+A note on scope first. Two measures are assumed as a baseline and are not
+treated as decisions here, because neither involves a genuine trade-off:
+**slow password hashing** (Argon2id, work factor tuned to roughly 100 ms per
+verification) and **breached-credential screening** at registration. Both cost
+almost nothing that a customer can perceive, and both are worth doing under
+any reasonable set of assumptions. The technical case for the first is in
+[appendix A.1](#a1-fast-hashing-is-the-wrong-tool-for-passwords).
 
-### 3.1 Make stolen password files worthless
+The three decisions below are the ones where something real is given up. Each
+is stated as the business trade-off first, with the implementation compressed
+to a line. Together they answer three questions in sequence: how an attack is
+detected, how the platform should respond, and where the defences belong.
 
-**The trade-off.** Slower password checking costs a fraction of a second per
-login and some server capacity at peak. In return, a database breach stops
-being an immediate disaster.
-
-**Verdict: the easiest call on this list.** The delay is below what a customer
-can perceive, the infrastructure cost is small and predictable, and the
-protection applies precisely when every other layer has already failed.
-
-*Implementation: Argon2id with per-user salts from a cryptographically secure
-source, work factor tuned to roughly 100 ms per verification. See
-[appendix A.1](#a1-fast-hashing-is-the-wrong-tool-for-passwords) for why the
-common shortcut fails.*
-
-### 3.2 Count failures across dimensions, not just per account
+### 3.1 Detection — count failures across dimensions, not just per account
 
 **The trade-off.** Counting failures by network address catches bulk attacks
 that per-account counting misses entirely. It also risks blocking whole
 offices, campuses and mobile networks, where hundreds of legitimate customers
 share one address.
 
+**Why it matters.** The dominant threat to a retail platform is credential
+stuffing, and it does not look like brute force. The attacker holds a list of
+username–password pairs leaked from other sites and tries each **once** — one
+attempt against a million accounts, not a million attempts against one
+account. A per-account counter never approaches its threshold, so the attack
+passes through a conventional lockout untouched.
+
 **Verdict: worth doing, but thresholds must differ by dimension.** Per-account
 limits can be tight, since one account generating many failures is genuinely
-odd. Network-level limits must be loose and should add verification rather
+odd. Network-level limits must be loose, and should add verification rather
 than block. The platform-wide failure rate should block nothing at all — its
 value is as an early warning that a campaign is underway.
 
-*Implementation: independent counters per account, per source IP, per device
-fingerprint, plus an aggregate anomaly signal. See
-[appendix A.2](#a2-credential-stuffing-does-not-look-like-brute-force) for why
-per-account counting fails against the most common attack.*
+*Implementation: independent counters per account, per source IP and per
+device fingerprint, plus an aggregate anomaly signal. See
+[appendix A.2](#a2-credential-stuffing-does-not-look-like-brute-force).*
 
-### 3.3 Escalate friction instead of locking the door
+### 3.2 Response — escalate friction instead of locking the door
 
 **The trade-off.** A hard lockout after three failures stops guessing. It also
 stops the customer who cannot remember which of their passwords they used
 here — and turns them into a support ticket, or a lost customer.
 
-**Verdict: replace lockout with escalation.** The two populations behave
-differently as friction rises, and escalation exploits that.
+**Why it matters.** A fixed short lockout is aimed at the wrong opponent. Ten
+seconds is a real deterrent to a person at a prompt; to a script it is a
+delay to schedule around, and the counter resets afterwards anyway. So the
+control imposes almost no cost on automation while imposing the full cost on
+anyone who has genuinely forgotten their password.
+
+**Verdict: replace lockout with escalation**, which exploits the fact that
+the two populations behave differently as friction rises.
 
 | Failed attempts | Response |
 |---|---|
@@ -143,12 +149,18 @@ worse on both counts: the attacker simply moves to the next account on the
 list, and the customer contacts support. **A permanent lockout converts a
 security event into a support cost and often a churn event.**
 
-### 3.4 Put the friction where money leaves, not where it arrives
+### 3.3 Placement — put the friction where money leaves, not where it arrives
 
-**The trade-off.** Uniform security spends its entire friction budget at
-login — the moment a customer is most likely to give up — and then leaves the
-account settings page, where takeover is actually converted into cash, no
-better defended than the product catalogue.
+**The trade-off.** Concentrating verification on high-value actions means
+some genuine customers hit friction at the worst moment — when they are
+trying to move their own money.
+
+**Why it matters.** Uniform security spends its entire friction budget at
+login, the point where a customer is most likely to give up, and then leaves
+the account settings page no better defended than the product catalogue. But
+takeover is not monetised while browsing. It is monetised at withdrawal, at
+payment, and above all at changing the bound phone number — after which the
+real owner cannot even recover the account.
 
 **Verdict: match verification strength to what is at stake.**
 
@@ -159,23 +171,8 @@ better defended than the product catalogue.
 | Withdraw balance, change bound phone, change payment method | High | Password plus second factor, and notify the previous contact |
 
 **This is the layer with the best return in the whole design**, because it
-does not add friction so much as move it — off the paths that earn money, onto
-the paths that lose it.
-
-### 3.5 Attack password reuse at the source
-
-**The trade-off.** Screening new passwords against known-breached credentials
-adds a step at registration for the minority who are affected, with some
-abandonment.
-
-**Verdict: worth it, and cheaper than it looks.** Only customers who chose an
-already-compromised password see any friction; everyone else passes through
-unaware. It also strikes at the root of credential stuffing — the attack only
-works because passwords are reused across sites — which no amount of rate
-limiting can address.
-
-*Implementation: k-anonymity range query against a breach corpus, so the
-password itself never leaves the platform.*
+does not really add friction — it moves it, off the paths that earn money and
+onto the paths that lose it.
 
 ## 4. Measuring it — and the organisational trap
 
@@ -229,31 +226,30 @@ unexplained conversion dip in another.
 
 ## Background
 
-In autumn 2025 I led a three-person coursework project for an Embedded
-Systems Security course, building a salted-hash authentication system with
-brute-force protection for an embedded Linux device. I was responsible for
-the security design and wrote the implementation. The code is in
-[`coursework/`](coursework/), with scope and background in
-[`coursework/NOTES.md`](coursework/NOTES.md).
+The authentication mechanism this study starts from — salted password
+hashing, a persisted failure counter, restricted file permissions — was built
+and tested as a working system for an embedded Linux device. I led the
+three-person team, was responsible for the security design, and wrote the
+implementation. The code is in [`coursework/`](coursework/), with scope and
+known limitations in [`coursework/NOTES.md`](coursework/NOTES.md).
 
-That project answered a narrow question: how do you stop someone standing in
-front of a device from guessing their way in? This document asks what changes
-when the same login screen is put in front of several million paying
-customers — which turns out to be less a security question than a question
-about who bears the cost of the answer.
+Building it raised the question this document answers. A design that is
+adequate for one device and one user behaves quite differently in front of
+several million paying customers — and the interesting part of that
+difference turns out to be commercial rather than technical.
 
 ---
 
 ## Appendix — what breaks at platform scale
 
-Three properties of the coursework implementation are reasonable
+Three properties of the original implementation are reasonable
 simplifications for one device and one user, and genuine problems on a
-platform. They are the technical basis for decisions 3.1 and 3.2.
+platform.
 
 ### A.1 Fast hashing is the wrong tool for passwords
 
-The coursework stores passwords as a single round of SHA-256 over the
-password concatenated with a random salt.
+The original stores passwords as a single round of SHA-256 over the password
+concatenated with a random salt.
 
 The salt does its job. Without it, an attacker who obtains the database can
 look every hash up in a table of common passwords prepared in advance, and
@@ -273,7 +269,7 @@ many orders of magnitude. Argon2 also demands substantial memory per
 evaluation, which limits the parallelism that makes GPU attacks efficient.
 
 Stated plainly: **a salt stops the attacker looking the answer up; a slow hash
-stops them working it out.** The coursework does the first and not the second.
+stops them working it out.** The original does the first and not the second.
 
 A second, smaller issue: the salt is generated with `rand()` seeded from the
 current time and process ID. Both are narrow and partly guessable. On one
@@ -284,7 +280,7 @@ predictable sequence weaken the very property that makes salting useful.
 
 This is the most consequential gap, and the least obvious.
 
-The coursework keeps a failure counter for the registered account and locks
+The original keeps a failure counter for the registered account and locks
 after three consecutive failures. That is the right shape for the threat it
 was built against: a person at a physical prompt, trying passwords one after
 another.
@@ -302,13 +298,13 @@ aggregate long before any individual account looks unusual.
 
 ### A.3 A short lockout is a scheduling parameter
 
-The coursework locks for ten seconds, then resets the counter automatically.
+The original locks for ten seconds, then resets the counter automatically.
 
 Ten seconds is a real deterrent to a person typing at a prompt. To a script it
 is a delay to schedule around. Against automation, a short fixed lockout
 imposes almost no cost on the attacker while imposing the full cost on any
 customer who has forgotten their password — which is the reasoning behind the
-escalating scheme in decision 3.3.
+escalating scheme in decision 3.2.
 
 ---
 
@@ -319,8 +315,8 @@ ecommerce-account-security/
 ├── README.md
 ├── LICENSE
 └── coursework/
-    ├── password_auth.c   # coursework implementation
-    └── NOTES.md          # project background, scope, known limitations
+    ├── password_auth.c   # working implementation of the base mechanism
+    └── NOTES.md          # scope, role, and known limitations
 ```
 
 ## License
